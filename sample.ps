@@ -1,0 +1,62 @@
+param (
+    [Parameter(Mandatory = $true)]
+    [string]$SiteToKeep,  # The name of the site to keep running
+
+    [string]$LogFile = "C:\Temp\iis_cleanup_log.txt"  
+)
+
+# Ensure log directory exists
+$logFolder = Split-Path $LogFile
+if (-not (Test-Path $logFolder)) {
+    New-Item -Path $logFolder -ItemType Directory | Out-Null
+}
+
+# Import IIS module
+Import-Module WebAdministration
+
+# Log start
+Add-Content -Path $LogFile -Value "`n--- IIS Cleanup Started: $(Get-Date) ---"
+Add-Content -Path $LogFile -Value "Keeping site: $SiteToKeep"
+
+# Get all IIS sites
+$allSites = Get-Website
+
+foreach ($site in $allSites) {
+    if ($site.Name -ne $SiteToKeep) {
+        try {
+            Stop-Website -Name $site.Name
+            Add-Content -Path $LogFile -Value "Stopped site: $($site.Name)"
+        } catch {
+            Add-Content -Path $LogFile -Value "Failed to stop site $($site.Name): $_"
+        }
+    } else {
+        Add-Content -Path $LogFile -Value "Keeping site running: $SiteToKeep"
+
+        # Get bindings for the site to keep
+        $bindings = Get-WebBinding -Name $SiteToKeep
+        foreach ($binding in $bindings) {
+            if ($binding.HostHeader -ne "") {
+                try {
+                    $proto = $binding.protocol
+                    $info = $binding.bindingInformation  # Format: IP:Port:HostHeader
+                    $parts = $info.Split(':')
+                    $ip = $parts[0]
+                    $port = $parts[1]
+                    $hostHeader = $parts[2]
+
+                    # Remove old binding
+                    Remove-WebBinding -Name $SiteToKeep -BindingInformation $info -Protocol $proto
+                    Add-Content -Path $LogFile -Value "Removed binding: Protocol=$proto, IP=$ip, Port=$port, HostHeader=$hostHeader"
+
+                    # Recreate binding without host header
+                    New-WebBinding -Name $SiteToKeep -Protocol $proto -Port $port -IPAddress $ip -HostHeader ""
+                    Add-Content -Path $LogFile -Value "Recreated binding without host header: Protocol=$proto, IP=$ip, Port=$port"
+                } catch {
+                    Add-Content -Path $LogFile -Value "Failed to update binding: $_"
+                }
+            }
+        }
+    }
+}
+
+Add-Content -Path $LogFile -Value "--- IIS Cleanup Completed: $(Get-Date) ---"
